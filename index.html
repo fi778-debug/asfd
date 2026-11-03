@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>동작 인식 리듬 벌레 잡기</title>
+    
+    <!-- TensorFlow.js & Teachable Machine Pose API -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.7.4/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8.6/dist/teachablemachine-pose.min.js"></script>
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background-color: #0f172a; 
+            color: #f8fafc; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            overflow: hidden; 
+        }
+        
+        h1 { margin-bottom: 15px; color: #fbbf24; text-shadow: 0 0 10px rgba(251, 191, 36, 0.5); }
+        
+        #game-container { 
+            position: relative; 
+            width: 100%;
+            max-width: 640px; 
+            height: 480px; 
+            border: 4px solid #334155; 
+            border-radius: 16px; 
+            overflow: hidden; 
+            background-color: #000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        
+        /* 웹캠 영상 (좌우 반전) */
+        #webcam-container { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            transform: scaleX(-1); 
+            opacity: 0.6; 
+        }
+        #webcam-container canvas { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; 
+        }
+        
+        /* 게임 렌더링 캔버스 */
+        #game-canvas { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            z-index: 10; 
+        }
+        
+        /* 상단 UI (점수, 레벨) */
+        #ui-layer { 
+            position: absolute; 
+            top: 15px; 
+            left: 20px; 
+            right: 20px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            z-index: 20; 
+            font-size: 22px; 
+            font-weight: 900; 
+            text-shadow: 2px 2px 4px rgba(0,0,0,1); 
+        }
+        .ui-box { 
+            background: rgba(15, 23, 42, 0.7); 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            border: 2px solid rgba(255,255,255,0.1); 
+            backdrop-filter: blur(4px);
+        }
+        
+        /* 하단 감지된 동작 표시기 */
+        #pose-debug { 
+            position: absolute; 
+            bottom: 20px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            z-index: 20; 
+            background: rgba(0,0,0,0.85); 
+            padding: 10px 24px; 
+            border-radius: 30px; 
+            font-size: 18px; 
+            font-weight: bold;
+            color: #38bdf8; 
+            text-align: center; 
+            border: 1px solid #38bdf8;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
+        }
+        
+        /* 로딩 및 시작 오버레이 */
+        #overlay-screen { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(15, 23, 42, 0.95); 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            z-index: 30; 
+        }
+        #status-title { margin-bottom: 15px; color: #fff; font-size: 28px; }
+        
+        #instruction-text {
+            color: #cbd5e1; 
+            text-align: center; 
+            line-height: 1.8; 
+            font-size: 18px;
+            background: rgba(255,255,255,0.05);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .highlight-fly { color: #fde047; font-weight: bold; font-size: 20px; }
+        .highlight-roach { color: #f87171; font-weight: bold; font-size: 20px; }
+        
+        #start-btn { 
+            margin-top: 30px; 
+            padding: 15px 40px; 
+            font-size: 22px; 
+            font-weight: 900; 
+            color: #fff; 
+            background: linear-gradient(45deg, #10b981, #059669); 
+            border: none; 
+            border-radius: 40px; 
+            cursor: pointer; 
+            display: none; 
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.5);
+            transition: transform 0.2s;
+        }
+        #start-btn:hover { transform: scale(1.05); }
+    </style>
+</head>
+<body>
+
+    <h1 id="main-title">🦟 리듬 벌레 잡기 게임 🪳</h1>
+
+    <div id="game-container">
+        <!-- 카메라 영상 영역 -->
+        <div id="webcam-container"></div>
+        
+        <!-- 게임 그래픽 캔버스 -->
+        <canvas id="game-canvas" width="640" height="480"></canvas>
+
+        <!-- 점수 UI -->
+        <div id="ui-layer">
+            <div class="ui-box">SCORE: <span id="score-text" style="color: #fde047;">0</span></div>
+            <div class="ui-box">LEVEL: <span id="level-text" style="color: #38bdf8;">1</span></div>
+        </div>
+
+        <!-- 실시간 동작 감지 디버그 -->
+        <div id="pose-debug">AI 모델 로딩 중...</div>
+
+        <!-- 시작 오버레이 -->
+        <div id="overlay-screen">
+            <h2 id="status-title">모델 로딩 중...</h2>
+            <div id="instruction-text">
+                동일 폴더의 Teachable Machine 모델 파일들을 불러오는 중입니다.<br>
+                잠시만 기다려주세요!
+            </div>
+            <button id="start-btn" onclick="startGame()">게임 시작하기</button>
+        </div>
+    </div>
+
+    <script>
+        // 깃허브 동일 폴더 내 모델 경로
+        const MODEL_URL = "./"; 
+        
+        let model, webcam, gameCanvas, gameCtx;
+        let isGameRunning = false;
+        let score = 0;
+        let level = 1;
+        
+        let currentPose = "대기 중";
+        let pose1Name = "동작1"; // 첫 번째 학습 클래스 (파리 매칭)
+        let pose2Name = "동작2"; // 두 번째 학습 클래스 (바퀴벌레 매칭)
+
+        let bugs = [];
+        let spawnTimer = null;
+
+        const TARGET_CENTER = { x: 320, y: 240 };
+        const TARGET_RADIUS = 55;
+
+        // 1. 초기화 및 Teachable Machine 모델 로드
+        async function init() {
+            const statusTitle = document.getElementById('status-title');
+            const instructionText = document.getElementById('instruction-text');
+            const startBtn = document.getElementById('start-btn');
+
+            try {
+                const modelURL = MODEL_URL + "model.json";
+                const metadataURL = MODEL_URL + "metadata.json";
+                
+                // 모델 로드
+                model = await tmPose.load(modelURL, metadataURL);
+
+                // 학습된 클래스 이름 자동 추출
+                const classLabels = model.getClassLabels();
+                if (classLabels.length >= 1) pose1Name = classLabels[0];
+                if (classLabels.length >= 2) pose2Name = classLabels[1];
+
+                // 안내 문구에 사용자 학습 이름 반영
+                instructionText.innerHTML = 
+                    `정중앙 타겟 영역으로 벌레가 다가올 때,<br><br>` +
+                    `<span class="highlight-fly">🦟 파리</span> 는 <span style="color:#fff; background:#333; padding:2px 8px; border-radius:8px;">[ ${pose1Name} ]</span> 동작으로!<br>` +
+                    `<span class="highlight-roach">🪳 바퀴벌레</span> 는 <span style="color:#fff; background:#333; padding:2px 8px; border-radius:8px;">[ ${pose2Name} ]</span> 동작으로 잡으세요!`;
+
+                // 웹캠 설정
+                webcam = new tmPose.Webcam(640, 480, true); // 좌우 반전
+                await webcam.setup();
+                await webcam.play();
+                document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+                // 캔버스 설정
+                gameCanvas = document.getElementById("game-canvas");
+                gameCtx = gameCanvas.getContext("2d");
+
+                statusTitle.innerText = "준비 완료!";
+                startBtn.style.display = "block";
+                document.getElementById("pose-debug").innerText = "카메라를 보고 동작을 취해보세요.";
+
+                // 인식 루프 시작
+                window.requestAnimationFrame(predictLoop);
+
+            } catch (error) {
+                console.error("모델 로드 오류:", error);
+                statusTitle.innerText = "모델 로드 실패!";
+                instructionText.innerHTML = 
+                    "같은 폴더에 <b>model.json, metadata.json, weights.bin</b> 파일이<br>정확하게 업로드되었는지 확인해주세요.<br><br>" +
+                    "<span style='color: #f87171;'>파일 이름이 소문자이며 누락된 파일이 없는지 점검하세요.</span>";
+            }
+        }
+
+        // 2. 웹캠 포즈 예측 루프
+        async function predictLoop() {
+            if (!webcam || !webcam.canvas) return;
+            
+            webcam.update();
+            const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+            const prediction = await model.predict(posenetOutput);
+
+            let highestProb = 0;
+            let bestClass = "대기 중";
+
+            for (let i = 0; i < prediction.length; i++) {
+                if (prediction[i].probability > highestProb) {
+                    highestProb = prediction[i].probability;
+                    bestClass = prediction[i].className; 
+                }
+            }
+
+            // 정확도 65% 이상일 때만 동작 인정
+            if (highestProb > 0.65) {
+                currentPose = bestClass;
+                document.getElementById("pose-debug").style.borderColor = "#10b981";
+                document.getElementById("pose-debug").style.color = "#10b981";
+            } else {
+                currentPose = "대기 중";
+                document.getElementById("pose-debug").style.borderColor = "#38bdf8";
+                document.getElementById("pose-debug").style.color = "#38bdf8";
+            }
+
+            document.getElementById("pose-debug").innerText = 
+                `현재 동작: [ ${currentPose} ] (${Math.round(highestProb * 100)}%)`;
+
+            window.requestAnimationFrame(predictLoop);
+        }
+
+        // 3. 게임 시작
+        function startGame() {
+            document.getElementById("overlay-screen").style.display = "none";
+            score = 0;
+            level = 1;
+            bugs = [];
+            isGameRunning = true;
+            
+            updateUI();
+            scheduleNextBug();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function updateUI() {
+            document.getElementById("score-text").innerText = score;
+            document.getElementById("level-text").innerText = level;
+        }
+
+        // 4. 리듬 벌레 스폰 시스템
+        function scheduleNextBug() {
+            if (!isGameRunning) return;
+            const baseInterval = Math.max(700, 2400 - (level * 200));
+            
+            spawnTimer = setTimeout(() => {
+                spawnBug();
+                scheduleNextBug();
+            }, baseInterval);
+        }
+
+        function spawnBug() {
+            const type = Math.random() < 0.5 ? 'fly' : 'roach';
+            const side = Math.floor(Math.random() * 4);
+            let startX, startY;
+
+            switch(side) {
+                case 0: startX = Math.random() * 640; startY = -40; break;
+                case 1: startX = 680; startY = Math.random() * 480; break;
+                case 2: startX = Math.random() * 640; startY = 520; break;
+                case 3: startX = -40; startY = Math.random() * 480; break;
+            }
+
+            const speed = 2.0 + (level * 0.35);
+            bugs.push({ x: startX, y: startY, type: type, speed: speed });
+        }
+
+        // 5. 게임 메인 루프 (캔버스 드로잉 및 벡터 벌레 렌더링)
+        function gameLoop() {
+            if (!isGameRunning) return;
+            
+            gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+            drawTargetZone();
+
+            for (let i = bugs.length - 1; i >= 0; i--) {
+                let bug = bugs[i];
+                
+                let dx = TARGET_CENTER.x - bug.x;
+                let dy = TARGET_CENTER.y - bug.y;
+                let dist = Math.hypot(dx, dy);
+
+                bug.x += (dx / dist) * bug.speed;
+                bug.y += (dy / dist) * bug.speed;
+
+                // 외부 이미지 없이 코드로 직접 그리는 정교한 벡터 벌레 렌더링
+                drawBugGraphic(gameCtx, bug.x, bug.y, bug.type);
+
+                // 타겟 존 도달 시 동작 검사
+                if (dist < TARGET_RADIUS + 10) {
+                    let isHit = false;
+                    
+                    if (bug.type === 'fly' && currentPose === pose1Name) {
+                        isHit = true;
+                    } else if (bug.type === 'roach' && currentPose === pose2Name) {
+                        isHit = true;
+                    }
+
+                    if (isHit) {
+                        showHitEffect(bug.x, bug.y, bug.type);
+                        score += 10;
+                        bugs.splice(i, 1);
+                        
+                        if (score > 0 && score % 50 === 0) {
+                            level++;
+                            showLevelUpEffect();
+                        }
+                        updateUI();
+                        continue;
+                    }
+                }
+
+                if (dist < 15) {
+                    bugs.splice(i, 1);
+                }
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- 벡터 벌레 렌더링 함수 (이미지 파일 불필요) ---
+        function drawBugGraphic(ctx, x, y, type) {
+            ctx.save();
+            ctx.translate(x, y);
+
+            if (type === 'fly') {
+                // 🦟 파리 벡터 드로잉
+                // 날개
+                ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+                ctx.beginPath();
+                ctx.ellipse(-10, -8, 12, 6, Math.PI / 4, 0, Math.PI * 2);
+                ctx.ellipse(10, -8, 12, 6, -Math.PI / 4, 0, Math.PI * 2);
+                ctx.fill();
+                // 몸통
+                ctx.fillStyle = "#334155";
+                ctx.beginPath();
+                ctx.ellipse(0, 4, 7, 10, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // 머리
+                ctx.fillStyle = "#0f172a";
+                ctx.beginPath();
+                ctx.arc(0, -6, 5, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                // 🪳 바퀴벌레 벡터 드로잉
+                // 더듬이
+                ctx.strokeStyle = "#9a3412";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(-4, -14); ctx.lineTo(-14, -22);
+                ctx.moveTo(4, -14); ctx.lineTo(14, -22);
+                ctx.stroke();
+                // 몸통
+                ctx.fillStyle = "#c2410c";
+                ctx.beginPath();
+                ctx.ellipse(0, 2, 9, 16, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // 머리
+                ctx.fillStyle = "#7c2d12";
+                ctx.beginPath();
+                ctx.arc(0, -12, 6, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        function drawTargetZone() {
+            gameCtx.beginPath();
+            gameCtx.arc(TARGET_CENTER.x, TARGET_CENTER.y, TARGET_RADIUS, 0, Math.PI * 2);
+            gameCtx.strokeStyle = "rgba(52, 211, 153, 0.7)";
+            gameCtx.lineWidth = 4;
+            gameCtx.stroke();
+            
+            gameCtx.beginPath();
+            gameCtx.moveTo(TARGET_CENTER.x - 20, TARGET_CENTER.y);
+            gameCtx.lineTo(TARGET_CENTER.x + 20, TARGET_CENTER.y);
+            gameCtx.moveTo(TARGET_CENTER.x, TARGET_CENTER.y - 20);
+            gameCtx.lineTo(TARGET_CENTER.x, TARGET_CENTER.y + 20);
+            gameCtx.strokeStyle = "rgba(52, 211, 153, 0.9)";
+            gameCtx.lineWidth = 2;
+            gameCtx.stroke();
+        }
+
+        function showHitEffect(x, y, type) {
+            gameCtx.save();
+            gameCtx.font = "900 28px Arial";
+            gameCtx.fillStyle = type === 'fly' ? "#fde047" : "#f87171";
+            gameCtx.shadowColor = "rgba(0,0,0,1)";
+            gameCtx.shadowBlur = 6;
+            gameCtx.fillText("HIT!", x, y - 25);
+            gameCtx.restore();
+        }
+        
+        function showLevelUpEffect() {
+            gameCtx.save();
+            gameCtx.font = "900 45px Arial";
+            gameCtx.fillStyle = "#38bdf8";
+            gameCtx.shadowColor = "rgba(255,255,255,0.8)";
+            gameCtx.shadowBlur = 15;
+            gameCtx.fillText("LEVEL UP!", TARGET_CENTER.x, TARGET_CENTER.y - 70);
+            gameCtx.restore();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
